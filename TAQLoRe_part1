@@ -1,0 +1,253 @@
+configfile: "./config_TAQLoRe.json"
+
+workdir: config["workdir"]["workdir"]
+
+work_dir = config["workdir"]["workdir"]
+script_dir = "../scripts"
+
+shell.suffix("; sleep 30")
+shell.prefix("set -e; set -o pipefail; ")
+
+
+# Obtain run prefix and barcode
+import os
+f = open(config["input_files"]["barcode_to_sample_file"], "r")
+RUN_PREFIX = []
+BARCODE = []
+for line in f:
+    if not line.startswith('#'):
+        run_prefix = line.strip().split('\t')[0]
+        barcode = line.strip().split('\t')[1]
+        RUN_PREFIX.append(run_prefix)
+        BARCODE.append(barcode)
+        del run_prefix, barcode
+f.close()
+del line, f
+
+
+rule all:
+    input:
+        # Generating last index for transcriptome
+        expand("{index_dummy_file}", index_dummy_file=config["input_files"]["last_transcriptome_index_dummy_file"]),
+        # Last - assessment of penalty parameters
+        expand("LAST_transcriptome/substitution_rate/{run_prefix}.{barcode}.par", zip, run_prefix=RUN_PREFIX, barcode=BARCODE),
+        # Running last alignment on the transcriptome to identify novel exons
+        expand("LAST_transcriptome/alignments_maf/{run_prefix}.{barcode}.maf", zip, run_prefix=RUN_PREFIX, barcode=BARCODE),
+        # Generating last index for genome
+        expand("{index_dummy_file_genome}", index_dummy_file_genome=config["input_files"]["last_genome_index_dummy_file"]),
+        # Identification of potential novel exons and aligning them to the genome, to obtain their genomic positions
+        expand(["results/parsed_last_output/{run_prefix}.{barcode}/{run_prefix}.{barcode}.parse_maf_transcripts_04.COMPLETED", "results/parsed_last_output/{run_prefix}.{barcode}/selected_reads_potential_exons.maf", "results/parsed_last_output/{run_prefix}.{barcode}/potential_missing_exons.out"], zip, run_prefix=RUN_PREFIX, barcode=BARCODE),
+        # Obtaining the genomic coordinates for potential novel exons
+        expand(["results/parsed_last_output/{run_prefix}.{barcode}/{run_prefix}.{barcode}.parse_maf_annotations.COMPLETED", "results/parsed_last_output/{run_prefix}.{barcode}/reads_missing_exons.bed"], zip, run_prefix=RUN_PREFIX, barcode=BARCODE),
+        # Filtering out exons that are not in the correct genomic positions for a gene of interest
+        expand("results/parsed_last_output/{run_prefix}.{barcode}/reads_missing_exons_gene_boundaries.bed", zip, run_prefix=RUN_PREFIX, barcode=BARCODE),
+        # This generates BedGraph and extra information for a particular libraries
+        expand(["results/bedgraph_info_novel_exons/{run_prefix}.{barcode}.BedGraph", "results/bedgraph_info_novel_exons/{run_prefix}.{barcode}.extended_info.txt", "results/bedgraph_info_novel_exons/{run_prefix}.{barcode}.novel_exons_per_library.COMPLETED"], zip, run_prefix=RUN_PREFIX, barcode=BARCODE),
+        # This generates the summary file with all the regions covered by at least one read in a one library
+        "results/bedgraph_info_novel_exons/novel_exons_summary.txt",
+        # This rule is to generate BedGraph file from summary (extracting columns 1-3 and 28, which is the last column, removing header, adding track info)
+        "results/bedgraph_info_novel_exons/sum.BedGraph",
+        # This rule generate a file with positions of novel exons (irrespectively of the amount of reads covering particular exons), together with exon names
+        "results/meta_gene_construction/novel_exons_coordinates_1nt.txt",
+        # Generating files with meta-gene and genomic coordinates of exons (coordinates in 1-based format)
+        "results/meta_gene_construction/meta_gene_genomic_exon_coordinates.txt"
+
+
+# Generating last index for transcriptome
+rule last_index_transcriptome:
+    input:
+        expand("{transcriptome_fasta}", transcriptome_fasta=config["input_files"]["transcriptome_fasta"])
+    output:
+        expand("{index_dummy_file}", index_dummy_file=config["input_files"]["last_transcriptome_index_dummy_file"])
+    params:
+        ALIGNMENTS_LOW_RATE_SUBS = "-uNEAR",
+        MASK_SIMPLE_REPEATS = "-R01",
+        DATABASE_PREFIX = expand("{index_prefix}", index_prefix=config["input_files"]["last_transcriptome_index"])
+    threads: 10000
+    conda:
+        "envs/taqlore.yaml"
+    shell:
+        """lastdb -P{threads} {params.ALIGNMENTS_LOW_RATE_SUBS} {params.MASK_SIMPLE_REPEATS} {params.DATABASE_PREFIX} {input} && touch {output} && echo {rule}.{wildcards} COMPLETED"""
+
+# Last - assessment of penalty parameters
+rule last_train_gap_mismatch_transcriptome:
+    input:
+        DUMMY_INDEX_COMPLETED = expand("{index_dummy_file}", index_dummy_file=config["input_files"]["last_transcriptome_index_dummy_file"]),
+        FASTA = expand("{fasta_file_dir}/{{run_prefix}}.{{barcode}}.fa", fasta_file_dir=config["samples"]["fasta_file_dir"])
+    output:
+        "LAST_transcriptome/substitution_rate/{run_prefix}.{barcode}.par"
+    params:
+        DATABASE_PREFIX = expand("{index_prefix}", index_prefix=config["input_files"]["last_transcriptome_index"])
+    threads: 10000
+    conda:
+        "envs/taqlore.yaml"
+    shell:
+        """last-train -P{threads} {params.DATABASE_PREFIX} {input.FASTA} > {output} && echo {rule}.{wildcards} COMPLETED"""
+
+# Running last alignment on the transcriptome to identify novel exons
+rule last_align_transcriptome:
+    input:
+        DUMMY_INDEX_COMPLETED = expand("{index_dummy_file}", index_dummy_file=config["input_files"]["last_transcriptome_index_dummy_file"]),
+        PARAMETER_FILE = "LAST_transcriptome/substitution_rate/{run_prefix}.{barcode}.par",
+        FASTA = expand("{fasta_file_dir}/{{run_prefix}}.{{barcode}}.fa", fasta_file_dir=config["samples"]["fasta_file_dir"])
+    output:
+         "LAST_transcriptome/alignments_maf/{run_prefix}.{barcode}.maf"
+    params:
+        DATABASE_PREFIX = expand("{index_prefix}", index_prefix=config["input_files"]["last_transcriptome_index"])
+    threads: 10000
+    conda:
+        "envs/taqlore.yaml"
+    shell:
+        """lastal -P{threads} -p {input.PARAMETER_FILE} -m50 {params.DATABASE_PREFIX} {input.FASTA} | last-split -m1 > {output} && echo {rule}.{wildcards} COMPLETED"""
+
+# Generating last index for genome
+rule last_index_genome:
+    input:
+        expand("{genome_fasta}", genome_fasta=config["input_files"]["genome_fasta"])
+    output:
+        expand("{index_dummy_file_genome}", index_dummy_file_genome=config["input_files"]["last_genome_index_dummy_file"])
+    params:
+        ALIGNMENTS_LOW_RATE_SUBS = "-uNEAR",
+        MASK_SIMPLE_REPEATS = "-R01",
+        DATABASE_PREFIX = expand("{index_prefix}", index_prefix=config["input_files"]["last_genome_index"])
+    threads: 10000
+    conda:
+        "envs/taqlore.yaml"
+    shell:
+        """lastdb -P{threads} {params.ALIGNMENTS_LOW_RATE_SUBS} {params.MASK_SIMPLE_REPEATS} {params.DATABASE_PREFIX} {input} && touch {output} && echo {rule}.{wildcards} COMPLETED"""
+
+# Identification of potential novel exons and aligning them to the genome, to obtain their genomic positions
+rule novel_exons_alignment_to_genome_parsing_last_maf:
+    input:
+        DUMMY_INDEX_COMPLETED = expand("{index_dummy_file}", index_dummy_file=config["input_files"]["last_genome_index_dummy_file"]),
+        LAST_MAF = "LAST_transcriptome/alignments_maf/{run_prefix}.{barcode}.maf",
+        GTF = expand("{gtf_file}", gtf_file=config["input_files"]["gtf_file"]),
+        FASTA_FILE = expand("{fasta_file_dir}/{{run_prefix}}.{{barcode}}.fa", fasta_file_dir=config["samples"]["fasta_file_dir"])
+    output:
+        COMPLETED = "results/parsed_last_output/{run_prefix}.{barcode}/{run_prefix}.{barcode}.parse_maf_transcripts_04.COMPLETED",
+        SELECTED_READS = "results/parsed_last_output/{run_prefix}.{barcode}/selected_reads_potential_exons.maf",
+        POTENTIAL_MISSING_EXONS = "results/parsed_last_output/{run_prefix}.{barcode}/potential_missing_exons.out"
+    params:
+        MIN_PROP = config["parameters"]["min_prop"],
+        MIN_PROP_ALIGN = config["parameters"]["min_prop_align"],
+        MIN_INSERT = config["parameters"]["min_insert"],
+        MIN_EXON_DISTANCE = config["parameters"]["min_exon_distance"],
+        GENOME_INDEX_DB = expand("{genome_index_last}", genome_index_last=config["input_files"]["last_genome_index"]),
+        OUT_DIR = "results/parsed_last_output/{run_prefix}.{barcode}"
+    threads: 10000
+    conda:
+        "envs/taqlore.yaml"
+    shell:
+        """perl {script_dir}/parse_maf_transcripts_04.pl {input.LAST_MAF} {input.GTF} {params.MIN_PROP} {params.MIN_PROP_ALIGN} {params.MIN_INSERT} {params.MIN_EXON_DISTANCE} {threads} {input.FASTA_FILE} {params.GENOME_INDEX_DB} {params.OUT_DIR} && touch {output.COMPLETED} && echo {rule}.{wildcards} COMPLETED"""
+
+# Obtaining the genomic coordinates for potential novel exons
+# dist parameter in the file is a distance between exons (so the minimum intronic space between exons)
+rule novel_exons_genomic_coordinates:
+    input:
+        COMPLETED = "results/parsed_last_output/{run_prefix}.{barcode}/{run_prefix}.{barcode}.parse_maf_transcripts_04.COMPLETED",
+        GTF = expand("{gtf_file}", gtf_file=config["input_files"]["gtf_file"]),
+        POTENTIAL_NOVEL_EXONS_MAF = "results/parsed_last_output/{run_prefix}.{barcode}/selected_reads_potential_exons.maf",
+        POTENTIAL_NOVEL_EXONS_OUT = "results/parsed_last_output/{run_prefix}.{barcode}/potential_missing_exons.out"
+    output:
+        COMPLETED = "results/parsed_last_output/{run_prefix}.{barcode}/{run_prefix}.{barcode}.parse_maf_annotations.COMPLETED",
+        READS_MISSING_EXONS = "results/parsed_last_output/{run_prefix}.{barcode}/reads_missing_exons.bed"
+    params:
+        DISTANCE_BETWEEN_EXONS = config["parameters"]["distance_between_exons"],
+        SAMPLE_ID = "{run_prefix}.{barcode}",
+        OUT_DIR = "results/parsed_last_output/{run_prefix}.{barcode}"
+    conda:
+        "envs/taqlore.yaml"
+    shell:
+        """perl {script_dir}/parse_maf_annotations.pl {input.GTF} {input.POTENTIAL_NOVEL_EXONS_MAF} {input.POTENTIAL_NOVEL_EXONS_OUT} {params.DISTANCE_BETWEEN_EXONS} {params.SAMPLE_ID} {params.OUT_DIR} && touch {output.COMPLETED} && echo {rule}.{wildcards} COMPLETED"""
+
+# Filtering out exons that are not in the correct genomic positions for a gene of interest
+rule filtering_genomic_positions_gene_boundaries:
+    input:
+        "results/parsed_last_output/{run_prefix}.{barcode}/reads_missing_exons.bed"
+    output:
+        "results/parsed_last_output/{run_prefix}.{barcode}/reads_missing_exons_gene_boundaries.bed"
+    params:
+        CHROMOSOME = expand("{chromosome}", chromosome=config["gene_info"]["chromosome_name"]),
+        GENE_START = expand("{gene_start}", gene_start=config["gene_info"]["gene_start"]),
+        GENE_END = expand("{gene_end}", gene_end=config["gene_info"]["gene_end"]),
+    conda:
+        "envs/taqlore.yaml"
+    shell:
+        """cat {input} | awk 'BEGIN{{OFS="\\t"}}{{if($1=="{params.CHROMOSOME}" && $2>={params.GENE_START} && $3<={params.GENE_END}){{print $0}}}}' > {output} && echo {rule}.{wildcards} COMPLETED"""
+
+# This generates BedGraph and extra information for a particular libraries
+rule novel_exons_per_library:
+    input:
+        READS_MISSING_EXONS = "results/parsed_last_output/{run_prefix}.{barcode}/reads_missing_exons_gene_boundaries.bed",
+        CHROM_SIZES = expand("{chrom_sizes}", chrom_sizes=config["input_files"]["chrom_sizes"])
+    output:
+        BEDGRAPH = "results/bedgraph_info_novel_exons/{run_prefix}.{barcode}.BedGraph",
+        EXTENDED_INFO = "results/bedgraph_info_novel_exons/{run_prefix}.{barcode}.extended_info.txt",
+        COMPLETED = "results/bedgraph_info_novel_exons/{run_prefix}.{barcode}.novel_exons_per_library.COMPLETED"
+    params:
+        SAMPLE_NAME = "{run_prefix}.{barcode}"
+    conda:
+        "envs/taqlore.yaml"
+    shell:
+        """python3 -u {script_dir}/novel_exons_per_library.py {input.READS_MISSING_EXONS} {input.CHROM_SIZES} {params.SAMPLE_NAME} {output.BEDGRAPH} {output.EXTENDED_INFO} && touch {output.COMPLETED} && echo {rule}.{wildcards} COMPLETED"""
+
+# This generates the summary file with all the regions covered by at least one read in a one library
+rule novel_exons_summary:
+    input:
+        expand("results/bedgraph_info_novel_exons/{run_prefix}.{barcode}.novel_exons_per_library.COMPLETED", zip, run_prefix=RUN_PREFIX, barcode=BARCODE)
+    output:
+        "results/bedgraph_info_novel_exons/novel_exons_summary.txt"
+    params:
+        INPUT_DIR = "results/bedgraph_info_novel_exons",
+        TEMP_FILE = "temp_file"
+    conda:
+        "envs/taqlore.yaml"
+    shell:
+        """python3 -u {script_dir}/novel_exons_summary.py {params.INPUT_DIR} {params.TEMP_FILE} {output} && rm {params.TEMP_FILE} && echo {rule}.{wildcards} COMPLETED"""
+
+# This rule is to generate BedGraph file from summary (extracting columns 1-3 and 28, which is the last column, removing header, adding track info)
+rule generate_BedGraph_sum:
+    input:
+        "results/bedgraph_info_novel_exons/novel_exons_summary.txt"
+    output:
+        "results/bedgraph_info_novel_exons/sum.BedGraph"
+    params:
+        GENE_NAME = expand("{gene_name}", gene_name=config["gene_info"]["gene_name"])
+    conda:
+        "envs/taqlore.yaml"
+    shell:
+        """echo 'track type=bedGraph name="Novel_Exons_for_{params.GENE_NAME}" description="Novel_Exons_for_{params.GENE_NAME}" visibility=full color=0,0,0 altColor=0,0,0 priority=20' > {output} && cat {input} | tail -n +2 | awk 'BEGIN{{OFS="\\t"}}{{print $1, $2, $3, $NF}}' >> {output} && echo {rule}.{wildcards} COMPLETED"""
+
+# Function to return a string depending if the gene is on positive or negative strand
+def PositiveNegativeStrand(wildcards):
+    if config["gene_info"]["strand"] == '+':
+        return 'sort -k1,1 -k2,2n -k3,3n'
+    elif config["gene_info"]["strand"] == '-':
+        return 'sort -k1,1 -k2,2nr -k3,3nr'
+
+# This rule generate a file with positions of novel exons (irrespectively of the amount of reads covering particular exons), together with exon names
+rule novel_exons_file_1nt_coordinates:
+    input:
+        "results/bedgraph_info_novel_exons/novel_exons_summary.txt"
+    output:
+        "results/meta_gene_construction/novel_exons_coordinates_1nt.txt"
+    params:
+        SORTING_STRING = PositiveNegativeStrand
+    conda:
+        "envs/taqlore.yaml"
+    shell:
+        """cat {input} | bedtools merge -i - | {params.SORTING_STRING} | awk 'BEGIN{{OFS="\\t"}}{{print $1, $2+1, $3, $4="novel_exon"(FNR)}}' > {output} && echo {rule}.{wildcards} COMPLETED"""
+
+# Generating files with meta-gene and genomic coordinates of exons (coordinates in 1-based format)
+rule coordinates_genomic_meta_gene_exons:
+    input:
+        EXISTING_EXONS = expand("{ENSEMBL_gene_model}", ENSEMBL_gene_model=config["input_files"]["all_exons_positions_ENSEMBL"]),
+        NOVEL_EXONS = "results/meta_gene_construction/novel_exons_coordinates_1nt.txt"
+    output:
+        "results/meta_gene_construction/meta_gene_genomic_exon_coordinates.txt"
+    params:
+        STRAND = config["gene_info"]["strand"]
+    conda:
+        "envs/taqlore.yaml"
+    shell:
+        """python3 -u {script_dir}/exons_coordinates.py {input.EXISTING_EXONS} {input.NOVEL_EXONS} {params.STRAND} {output} && echo {rule}.{wildcards} COMPLETED"""

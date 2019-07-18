@@ -1,0 +1,364 @@
+configfile: "./config_TAQLoRe.json"
+
+workdir: config["workdir"]["workdir"]
+
+work_dir = config["workdir"]["workdir"]
+script_dir = "../scripts"
+
+shell.suffix("; sleep 30")
+shell.prefix("set -e; set -o pipefail; ")
+
+
+# Obtain run prefix and barcode
+import os
+f = open(config["input_files"]["barcode_to_sample_file"], "r")
+RUN_PREFIX = []
+BARCODE = []
+SAMPLE_NAME = []
+for line in f:
+    if not line.startswith('#'):
+        run_prefix = line.strip().split('\t')[0]
+        barcode = line.strip().split('\t')[1]
+        sample_name = line.strip().split('\t')[2]
+        RUN_PREFIX.append(run_prefix)
+        BARCODE.append(barcode)
+        SAMPLE_NAME.append(sample_name)
+        del run_prefix, barcode, sample_name
+f.close()
+del line, f
+
+# Creating list of lists with all possible combinations of run prefix, barcode, min_reads_threshold, min_num_individuals_threshold and min_num_libraries_threshold
+ALL_COMBINATIONS_LIST = []
+# If any of config parameters is an integer or string, then convert to list of strings
+if isinstance(config["parameters"]["min_reads_threshold"], int) or isinstance(config["parameters"]["min_reads_threshold"], str):
+    c_list = [str(config["parameters"]["min_reads_threshold"])]
+# Else use as it is
+else:
+    c_list = config["parameters"]["min_reads_threshold"]
+if isinstance(config["parameters"]["min_num_individuals_threshold"], int) or isinstance(config["parameters"]["min_num_individuals_threshold"], str):
+    d_list = [str(config["parameters"]["min_num_individuals_threshold"])]
+# Else use as it is
+else:
+    d_list = config["parameters"]["min_num_individuals_threshold"]
+if isinstance(config["parameters"]["min_num_libraries_threshold"], int) or isinstance(config["parameters"]["min_num_libraries_threshold"], str):
+    e_list = [str(config["parameters"]["min_num_libraries_threshold"])]
+# Else use as it is
+else:
+    e_list = config["parameters"]["min_num_libraries_threshold"]
+for a in RUN_PREFIX:
+    for b in BARCODE:
+        for c in c_list:
+            for d in d_list:
+                for e in e_list:
+                    ALL_COMBINATIONS_LIST.append([a, b, str(c), str(d), str(e)])
+
+
+rule all:
+    input:
+        # Generate a BED file (0-based) with genomic coordinates of all the exons in the meta-gene
+        "results/meta_gene_construction/genomic_coordinates_all_exons.bed",
+        # Obtain FASTA sequence of exons to construct meta-gene
+        "results/meta_gene_construction/meta_gene_exons_sequences.fa",
+        # Creating a final FASTA of the meta-gene (one header line and contiguous FASTA sequence)
+        "results/meta_gene_construction/meta_gene_sequence.fa",
+        # Creating an index of meta-gene for GMAP aligner
+        "results/meta_gene_construction/meta_gene_GMAP_index_build.COMPLETED",
+        # Mapping all reads to the meta-gene
+        expand("results/GMAP_align_meta_gene/{run_prefix}.{barcode}.gmap_metagene_all_exons.sam", zip, run_prefix=RUN_PREFIX, barcode=BARCODE),
+        # Creating exon counts and splicing patterns
+        expand("results/meta_gene_exon_counts_splicing_patterns/{run_prefix}.{barcode}_{min_exon_coverage}_exon_counts.COMPLETED", zip, run_prefix=RUN_PREFIX, barcode=BARCODE, min_exon_coverage=[config["parameters"]["exon_coverage_threshold"] for x in range(len(BARCODE))]),
+        # Parsing output of Wilfried script (file with read count for every exon) to obtain exons above specified threshold (at least 5 reads covering an exon in at least 2 individuals or at least 2 libraries from the same individual)
+        expand(["results/exons_filtering/exons_after_filtering_min_reads_{min_reads_threshold}_min_individuals_{min_num_individuals_threshold}_min_libraries_{min_num_libraries_threshold}.included.txt", "results/exons_filtering/exons_after_filtering_min_reads_{min_reads_threshold}_min_individuals_{min_num_individuals_threshold}_min_libraries_{min_num_libraries_threshold}.excluded.txt"], min_reads_threshold=config["parameters"]["min_reads_threshold"], min_num_individuals_threshold=config["parameters"]["min_num_individuals_threshold"], min_num_libraries_threshold=config["parameters"]["min_num_libraries_threshold"]),
+        # Removing reads overlapping removed exons
+        expand(["results/reads_splicing_patterns_removed_exons/{run_prefix}.{barcode}.min_reads_{min_reads_threshold}.min_individuals_{min_num_individuals_threshold}.min_libraries_{min_num_libraries_threshold}.included.txt", "results/reads_splicing_patterns_removed_exons/{run_prefix}.{barcode}.min_reads_{min_reads_threshold}.min_individuals_{min_num_individuals_threshold}.min_libraries_{min_num_libraries_threshold}.excluded.txt"], zip, run_prefix=[x[0] for x in ALL_COMBINATIONS_LIST], barcode=[x[1] for x in ALL_COMBINATIONS_LIST], min_reads_threshold=[x[2] for x in ALL_COMBINATIONS_LIST], min_num_individuals_threshold=[x[3] for x in ALL_COMBINATIONS_LIST], min_num_libraries_threshold=[x[4] for x in ALL_COMBINATIONS_LIST]),
+        # Reporting the longest isoform with downweighted read counts
+        "results/downweighted_read_counts_after_removing_exons/table.downweighted_read_counts.all_isoforms_included_exons.txt",
+        # Generating histogram of log10+0.0001 values of downweighted read counts for each sample
+        expand("results/downweighted_read_counts_after_removing_exons/histograms/{sample_name}.histogram.pdf", zip, sample_name=SAMPLE_NAME),
+        # Filtering out the isoforms below specified thresholds - sum of reads per isoform and number of samples having at least specified number of reads
+        expand("results/filtered_downweighted_read_counts/table.downweighted_read_counts.sum_{sum_threshold}.min_reads_per_sample_{reads_in_sample_threshold}.min_samples_{sample_threshold}.txt", sum_threshold=config["parameters"]["sum_threshold"], reads_in_sample_threshold=config["parameters"]["reads_in_sample_threshold"], sample_threshold=config["parameters"]["sample_threshold"]),
+        # Creating a table with information about known transcript IDs and novel exons for each splicing pattern in downweighted read counts file after filtering
+        expand("results/annotation_table_filtered_downweighted_read_counts/annotation_table.sum_{sum_threshold}.min_reads_per_sample_{reads_in_sample_threshold}.min_samples_{sample_threshold}.txt", sum_threshold=config["parameters"]["sum_threshold"], reads_in_sample_threshold=config["parameters"]["reads_in_sample_threshold"], sample_threshold=config["parameters"]["sample_threshold"]),
+        # Performing a TMM normalization across downweighted reads
+        expand(["results/tmm_normalized_filtered_downweighted_read_counts/table.tmm_norm.sum_{sum_threshold}.min_reads_per_sample_{reads_in_sample_threshold}.min_samples_{sample_threshold}.txt", "results/tmm_normalized_filtered_downweighted_read_counts/table.geom_mean_transcripts.sum_{sum_threshold}.min_reads_per_sample_{reads_in_sample_threshold}.min_samples_{sample_threshold}.txt", "results/tmm_normalized_filtered_downweighted_read_counts/table.samples_factor.sum_{sum_threshold}.min_reads_per_sample_{reads_in_sample_threshold}.min_samples_{sample_threshold}.txt"], sum_threshold=config["parameters"]["sum_threshold"], reads_in_sample_threshold=config["parameters"]["reads_in_sample_threshold"], sample_threshold=config["parameters"]["sample_threshold"]),
+        # Visualisation - heatmaps
+        expand(["results/plots/heatmaps/heatmap.dendro.sum_{sum_threshold}.min_reads_per_sample_{reads_in_sample_threshold}.min_samples_{sample_threshold}.pdf", "results/plots/heatmaps/heatmap.no_dendro.sum_{sum_threshold}.min_reads_per_sample_{reads_in_sample_threshold}.min_samples_{sample_threshold}.pdf"], sum_threshold=config["parameters"]["sum_threshold"], reads_in_sample_threshold=config["parameters"]["reads_in_sample_threshold"], sample_threshold=config["parameters"]["sample_threshold"]),
+        # Visualisation - PCA plots
+        expand(["results/plots/PCA/sample_dist_hist.sum_{sum_threshold}.min_reads_per_sample_{reads_in_sample_threshold}.min_samples_{sample_threshold}.pdf", "results/plots/PCA/pca_plot_pc1_pc2.sum_{sum_threshold}.min_reads_per_sample_{reads_in_sample_threshold}.min_samples_{sample_threshold}.pdf", "results/plots/PCA/pca_plot_pc1_pc3.sum_{sum_threshold}.min_reads_per_sample_{reads_in_sample_threshold}.min_samples_{sample_threshold}.pdf", "results/plots/PCA/pca_plot_pc2_pc3.sum_{sum_threshold}.min_reads_per_sample_{reads_in_sample_threshold}.min_samples_{sample_threshold}.pdf", "results/plots/PCA/variance_explained_pc.sum_{sum_threshold}.min_reads_per_sample_{reads_in_sample_threshold}.min_samples_{sample_threshold}.pdf", "results/plots/PCA/contributions_transcripts_pc1.sum_{sum_threshold}.min_reads_per_sample_{reads_in_sample_threshold}.min_samples_{sample_threshold}.pdf", "results/plots/PCA/contributions_transcripts_pc2.sum_{sum_threshold}.min_reads_per_sample_{reads_in_sample_threshold}.min_samples_{sample_threshold}.pdf", "results/plots/PCA/contributions_transcripts_pc3.sum_{sum_threshold}.min_reads_per_sample_{reads_in_sample_threshold}.min_samples_{sample_threshold}.pdf", "results/plots/PCA/corr_pc1_num_reads.sum_{sum_threshold}.min_reads_per_sample_{reads_in_sample_threshold}.min_samples_{sample_threshold}.pdf", "results/plots/PCA/corr_pc2_num_reads.sum_{sum_threshold}.min_reads_per_sample_{reads_in_sample_threshold}.min_samples_{sample_threshold}.pdf", "results/plots/PCA/corr_pc3_num_reads.sum_{sum_threshold}.min_reads_per_sample_{reads_in_sample_threshold}.min_samples_{sample_threshold}.pdf"], sum_threshold=config["parameters"]["sum_threshold"], reads_in_sample_threshold=config["parameters"]["reads_in_sample_threshold"], sample_threshold=config["parameters"]["sample_threshold"]),
+        # Creating a table with information about known transcript IDs and novel exons for each splicing pattern in downweighted read counts file before filtering
+        "results/all_isoforms_annotation_table_downweighted_reads/all_isoforms.downweighted_reads.annotation_table.txt",
+        # Creating annotation table with coding status and length of coding transcripts, BED12 file and FASTA file with sequences of coding isoforms
+        ["results/coding_length_extra_annotation/annotation_table.all_isoforms.coding_length.txt", "results/coding_length_extra_annotation/bed12.all_isoforms.coding_length.bed12", "results/coding_length_extra_annotation/fasta_coding.all_isoforms.coding_length.fa"],
+        # Creating annotation table with coding status and length of coding transcripts, BED12 file and FASTA file with sequences of coding isoforms for isoforms after thresholding
+        expand(["results/coding_length_extra_annotation/annotation_table.sum_{sum_threshold}.min_reads_per_sample_{reads_in_sample_threshold}.min_samples_{sample_threshold}.coding_length.txt", "results/coding_length_extra_annotation/bed12.sum_{sum_threshold}.min_reads_per_sample_{reads_in_sample_threshold}.min_samples_{sample_threshold}.coding_length.bed12", "results/coding_length_extra_annotation/fasta_coding.sum_{sum_threshold}.min_reads_per_sample_{reads_in_sample_threshold}.min_samples_{sample_threshold}.coding_length.fa"], sum_threshold=config["parameters"]["sum_threshold"], reads_in_sample_threshold=config["parameters"]["reads_in_sample_threshold"], sample_threshold=config["parameters"]["sample_threshold"]),
+        # Creating a table with missing exons/novel exon-exon junctions in coding sequences
+        expand("results/missing_exons_novel_junctions_expression/table.missing_exons_novel_junctions.sum_{sum_threshold}.min_reads_per_sample_{reads_in_sample_threshold}.min_samples_{sample_threshold}.txt", sum_threshold=config["parameters"]["sum_threshold"], reads_in_sample_threshold=config["parameters"]["reads_in_sample_threshold"], sample_threshold=config["parameters"]["sample_threshold"]),
+        # Creating FASTA file and info table for non-coding transcripts
+        expand(["results/non_coding_novel_exons_transcript_fasta_info_table/info_table.sum_{sum_threshold}.min_reads_per_sample_{reads_in_sample_threshold}.min_samples_{sample_threshold}.txt", "results/non_coding_novel_exons_transcript_fasta_info_table/fasta_non_coding_transcripts.sum_{sum_threshold}.min_reads_per_sample_{reads_in_sample_threshold}.min_samples_{sample_threshold}.fa"], sum_threshold=config["parameters"]["sum_threshold"], reads_in_sample_threshold=config["parameters"]["reads_in_sample_threshold"], sample_threshold=config["parameters"]["sample_threshold"]),
+
+
+# Generate a BED file (0-based) with genomic coordinates of all the exons in the meta-gene
+rule genomic_bed_coordinates:
+    input:
+        "results/meta_gene_construction/meta_gene_genomic_exon_coordinates.txt"
+    output:
+        "results/meta_gene_construction/genomic_coordinates_all_exons.bed"
+    params:
+        CHROM = expand("{chrom}", chrom=config["gene_info"]["chromosome_name"]),
+        STRAND = expand("{strand}", strand=config["gene_info"]["strand"])
+    shell:
+        """cat {input} | awk 'BEGIN{{OFS="\\t"}}{{print "{params.CHROM}", $3-1, $4, ".", ".", "{params.STRAND}"}}' > {output} && echo {rule}.{wildcards} COMPLETED"""
+
+# Obtain FASTA sequence of exons to construct meta-gene
+rule FASTA_sequence_all_exons:
+    input:
+        FASTA_SEQUENCE = expand("{fasta_file_genome}", fasta_file_genome=config["input_files"]["genome_fasta"]),
+        BED_FILE = "results/meta_gene_construction/genomic_coordinates_all_exons.bed"
+    output:
+        "results/meta_gene_construction/meta_gene_exons_sequences.fa"
+    shell:
+        """bedtools getfasta -s -fi {input.FASTA_SEQUENCE} -bed {input.BED_FILE} -fo {output} && echo {rule}.{wildcards} COMPLETED"""
+
+# Creating a final FASTA of the meta-gene (one header line and contiguous FASTA sequence)
+rule FASTA_sequence_meta_gene:
+    input:
+        "results/meta_gene_construction/meta_gene_exons_sequences.fa"
+    output:
+        "results/meta_gene_construction/meta_gene_sequence.fa"
+    params:
+        GENE_NAME = expand("{gene_name}", gene_name=config["gene_info"]["gene_name"])
+    shell:
+        """echo ">meta_gene_{params.GENE_NAME}" > {output} && cat {input} | grep -v "^>" | tr -d '\\n' >> {output} && echo >> {output} && echo {rule}.{wildcards} COMPLETED"""
+
+# Creating an index of meta-gene for GMAP aligner
+rule meta_gene_GMAP_index_build:
+    input:
+        "results/meta_gene_construction/meta_gene_sequence.fa"
+    output:
+        "results/meta_gene_construction/meta_gene_GMAP_index_build.COMPLETED"
+    params:
+        INDEX_NAME = expand("meta_gene_{gene_name}", gene_name=config["gene_info"]["gene_name"]),
+        INDEX_DIR = "results/meta_gene_construction/GMAP_index"
+    shell:
+        """gmap_build -D {params.INDEX_DIR} -d {params.INDEX_NAME} {input} && touch {output} && echo {rule}.{wildcards} COMPLETED"""
+
+# Mapping all reads to the meta-gene
+rule mapping_reads_to_meta_gene:
+    input:
+        NOT_RELEVANT = "results/meta_gene_construction/meta_gene_GMAP_index_build.COMPLETED",
+        FASTA_FILES = expand("{fasta_file_dir}/{{run_prefix}}.{{barcode}}.fa", fasta_file_dir=config["samples"]["fasta_file_dir"])
+    output:
+        "results/GMAP_align_meta_gene/{run_prefix}.{barcode}.gmap_metagene_all_exons.sam"
+    threads: 10000
+    params:
+        INDEX_DIR = "results/meta_gene_construction/GMAP_index",
+        INDEX_FILE_PREFIX = expand("meta_gene_{gene_name}", gene_name=config["gene_info"]["gene_name"])
+    shell:
+        """gmap -t {threads} --align -f samse -D {params.INDEX_DIR} -d {params.INDEX_FILE_PREFIX} {input.FASTA_FILES} > {output} && echo {rule}.{wildcards} COMPLETED"""
+
+# Creating exon counts and splicing patterns
+rule exon_counts_splicing_patterns:
+    input:
+        META_GENE_TABLE = "results/meta_gene_construction/meta_gene_genomic_exon_coordinates.txt",
+        ALIGNED_FILE = "results/GMAP_align_meta_gene/{run_prefix}.{barcode}.gmap_metagene_all_exons.sam"
+    output:
+        "results/meta_gene_exon_counts_splicing_patterns/{run_prefix}.{barcode}_{min_exon_coverage}_exon_counts.COMPLETED",
+    params:
+        MIN_EXON_LENGTH = config["parameters"]["min_exon_length"],
+        MIN_EXON_COVERAGE_FRACTION = config["parameters"]["exon_coverage_threshold"],
+        OUTPUT_DIR = "results/meta_gene_exon_counts_splicing_patterns"
+    shell:
+        """perl {script_dir}/get_novel_junctions_CIGAR_06c.pl {input.META_GENE_TABLE} {input.ALIGNED_FILE} {params.MIN_EXON_LENGTH} {params.MIN_EXON_COVERAGE_FRACTION} {params.OUTPUT_DIR} && touch {output} && echo {rule}.{wildcards} COMPLETED"""
+
+# Parsing output of Wilfried script (file with read count for every exon) to obtain exons above specified threshold (at least 5 reads covering an exon in at least 2 individuals or at least 2 libraries from the same individual)
+rule exons_above_below_threshold_read_count_individuals_libraries:
+    input:
+        NOT_IMPORTANT = expand("results/meta_gene_exon_counts_splicing_patterns/{run_prefix}.{barcode}_{min_exon_coverage}_exon_counts.COMPLETED", zip, run_prefix=RUN_PREFIX, barcode=BARCODE, min_exon_coverage=[config["parameters"]["exon_coverage_threshold"] for x in range(len(BARCODE))]),
+        BARCODE_SAMPLE_NAMES_FILE = expand("{barcode_sample_names}", barcode_sample_names=config["input_files"]["barcode_to_sample_file"])
+    output:
+        EXONS_ABOVE_THRESHOLD = "results/exons_filtering/exons_after_filtering_min_reads_{min_reads_threshold}_min_individuals_{min_num_individuals_threshold}_min_libraries_{min_num_libraries_threshold}.included.txt",
+        EXONS_BELOW_THRESHOLD = "results/exons_filtering/exons_after_filtering_min_reads_{min_reads_threshold}_min_individuals_{min_num_individuals_threshold}_min_libraries_{min_num_libraries_threshold}.excluded.txt"
+    params:
+        DIRECTORY = "results/meta_gene_exon_counts_splicing_patterns",
+        DISTINCTION_STRING = expand("exon_counts_{min_exon_coverage}", min_exon_coverage=config["parameters"]["exon_coverage_threshold"]),
+        MIN_READ_COUNT = "{min_reads_threshold}",
+        MIN_INDIVIDUALS = "{min_num_individuals_threshold}",
+        MIN_LIBRARIES_PER_INDIVIDUAL = "{min_num_libraries_threshold}"
+    shell:
+        """python3 -u {script_dir}/choosing_expressed_exons_from_metagene_counts_Wilfried_script.py {input.BARCODE_SAMPLE_NAMES_FILE} {params.DIRECTORY} {params.DISTINCTION_STRING} {params.MIN_INDIVIDUALS} {params.MIN_LIBRARIES_PER_INDIVIDUAL} {params.MIN_READ_COUNT} {output.EXONS_ABOVE_THRESHOLD} {output.EXONS_BELOW_THRESHOLD} && echo {rule}.{wildcards} COMPLETED"""
+
+# Removing reads overlapping removed exons
+rule excluding_reads_splicing_patterns_removed_exons:
+    input:
+        NOT_IMPORTANT = expand("results/meta_gene_exon_counts_splicing_patterns/{run_prefix}.{barcode}_{min_exon_coverage}_exon_counts.COMPLETED", zip, run_prefix=RUN_PREFIX, barcode=BARCODE, min_exon_coverage=[config["parameters"]["exon_coverage_threshold"] for x in range(len(BARCODE))]),
+        EXCLUDED_EXONS = "results/exons_filtering/exons_after_filtering_min_reads_{min_reads_threshold}_min_individuals_{min_num_individuals_threshold}_min_libraries_{min_num_libraries_threshold}.excluded.txt"
+    output:
+        READS_INCLUDED_EXONS = "results/reads_splicing_patterns_removed_exons/{run_prefix}.{barcode}.min_reads_{min_reads_threshold}.min_individuals_{min_num_individuals_threshold}.min_libraries_{min_num_libraries_threshold}.included.txt",
+        READS_EXCLUDED_EXONS = "results/reads_splicing_patterns_removed_exons/{run_prefix}.{barcode}.min_reads_{min_reads_threshold}.min_individuals_{min_num_individuals_threshold}.min_libraries_{min_num_libraries_threshold}.excluded.txt"
+    params:
+        READ_SPLICING_PATTERNS = "results/meta_gene_exon_counts_splicing_patterns/{run_prefix}.{barcode}_splicing_patterns_cds.tmp"
+    shell:
+        """python3 -u {script_dir}/removing_reads_overlapping_removed_exons_Wilfried_script.py {input.EXCLUDED_EXONS} {params.READ_SPLICING_PATTERNS} {output.READS_INCLUDED_EXONS} {output.READS_EXCLUDED_EXONS} && echo {rule}.{wildcards} COMPLETED"""
+
+# Reporting the longest isoform with downweighted read counts
+rule downweighted_counts_longest_isoform:
+    input:
+        SPLICING_PATTERNS = expand("results/reads_splicing_patterns_removed_exons/{run_prefix}.{barcode}.min_reads_{min_reads_threshold}.min_individuals_{min_num_individuals_threshold}.min_libraries_{min_num_libraries_threshold}.included.txt", zip, run_prefix=[x[0] for x in ALL_COMBINATIONS_LIST], barcode=[x[1] for x in ALL_COMBINATIONS_LIST], min_reads_threshold=[x[2] for x in ALL_COMBINATIONS_LIST], min_num_individuals_threshold=[x[3] for x in ALL_COMBINATIONS_LIST], min_num_libraries_threshold=[x[4] for x in ALL_COMBINATIONS_LIST]),
+        MAPPINGS = "results/meta_gene_construction/meta_gene_genomic_exon_coordinates.txt",
+        BARCODE_SAMPLE_NAMES_FILE = expand("{barcode_sample_names}", barcode_sample_names=config["input_files"]["barcode_to_sample_file"])
+    output:
+        "results/downweighted_read_counts_after_removing_exons/table.downweighted_read_counts.all_isoforms_included_exons.txt"
+    params:
+        DIRECTORY = "results/reads_splicing_patterns_removed_exons",
+        DISTINCTION_STRING = ".included.txt",
+        GENE_NAME = expand("{gene_name}", gene_name=config["gene_info"]["gene_name"])
+    shell:
+        """python3 -u {script_dir}/assessing_longest_unique_isoforms_downweighting_reads_Wilfried_script.py {input.BARCODE_SAMPLE_NAMES_FILE} {params.GENE_NAME} {params.DIRECTORY} {params.DISTINCTION_STRING} {input.MAPPINGS} {output} && echo {rule}.{wildcards} COMPLETED"""
+
+# Generating histogram of log10+0.0001 values of downweighted read counts for each sample
+rule histogram_log10_downweighted_counts:
+    input:
+        "results/downweighted_read_counts_after_removing_exons/table.downweighted_read_counts.all_isoforms_included_exons.txt"
+    output:
+        "results/downweighted_read_counts_after_removing_exons/histograms/{sample_name}.histogram.pdf"
+    params:
+        SAMPLE_NAME = lambda wildcards: wildcards.sample_name.replace('-', '.')
+    shell:
+        """Rscript {script_dir}/histogram_log10_downweighted_read_counts.R {input} {params.SAMPLE_NAME} {output} && echo {rule}.{wildcards} COMPLETED"""
+
+# Filtering out the isoforms below specified thresholds - sum of reads per isoform and number of samples having at least specified number of reads
+rule filtering_downweighted_counts_sum_reads_samples:
+    input:
+        "results/downweighted_read_counts_after_removing_exons/table.downweighted_read_counts.all_isoforms_included_exons.txt"
+    output:
+        "results/filtered_downweighted_read_counts/table.downweighted_read_counts.sum_{sum_threshold}.min_reads_per_sample_{reads_in_sample_threshold}.min_samples_{sample_threshold}.txt"
+    params:
+        SUM_FILTER = "{sum_threshold}",
+        READS_IN_SAMPLE_FILTER = "{reads_in_sample_threshold}",
+        NUM_SAMPLES_THRESHOLD = "{sample_threshold}"
+    shell:
+        """python3 -u {script_dir}/filtering_downweighted_counts_file_sum_num_samples_reads.py {input} {params.SUM_FILTER} {params.READS_IN_SAMPLE_FILTER} {params.NUM_SAMPLES_THRESHOLD} {output} && echo {rule}.{wildcards} COMPLETED"""
+
+# Creating a table with information about known transcript IDs and novel exons for each splicing pattern in downweighted read counts file after filtering
+rule annotation_table_splicing_patterns_filtered_downweighted_counts:
+    input:
+        MAPPINGS = "results/meta_gene_construction/meta_gene_genomic_exon_coordinates.txt",
+        SPLICE_PATTERNS = "results/filtered_downweighted_read_counts/table.downweighted_read_counts.sum_{sum_threshold}.min_reads_per_sample_{reads_in_sample_threshold}.min_samples_{sample_threshold}.txt"
+    output:
+        "results/annotation_table_filtered_downweighted_read_counts/annotation_table.sum_{sum_threshold}.min_reads_per_sample_{reads_in_sample_threshold}.min_samples_{sample_threshold}.txt"
+    shell:
+        """python3 -u {script_dir}/creating_isoform_info_table_existing_novel.py {input.MAPPINGS} {input.SPLICE_PATTERNS} {output} && echo {rule}.{wildcards} COMPLETED"""
+
+# Performing a TMM normalization across downweighted reads
+rule TMM_normalization_downweighted_read_counts:
+    input:
+        "results/filtered_downweighted_read_counts/table.downweighted_read_counts.sum_{sum_threshold}.min_reads_per_sample_{reads_in_sample_threshold}.min_samples_{sample_threshold}.txt"
+    output:
+        TMM_NORM_TABLE = "results/tmm_normalized_filtered_downweighted_read_counts/table.tmm_norm.sum_{sum_threshold}.min_reads_per_sample_{reads_in_sample_threshold}.min_samples_{sample_threshold}.txt",
+        GEOM_MEAN_TRANSCRIPTS = "results/tmm_normalized_filtered_downweighted_read_counts/table.geom_mean_transcripts.sum_{sum_threshold}.min_reads_per_sample_{reads_in_sample_threshold}.min_samples_{sample_threshold}.txt",
+        SAMPLES_MEDIAN_NORM_FACTOR = "results/tmm_normalized_filtered_downweighted_read_counts/table.samples_factor.sum_{sum_threshold}.min_reads_per_sample_{reads_in_sample_threshold}.min_samples_{sample_threshold}.txt"
+    shell:
+        """python3 -u {script_dir}/tmm_normalization_downweighted_counts.py {input} {output.TMM_NORM_TABLE} {output.GEOM_MEAN_TRANSCRIPTS} {output.SAMPLES_MEDIAN_NORM_FACTOR} && echo {rule}.{wildcards} COMPLETED"""
+
+# Visualisation - heatmaps
+rule visualisation_heatmaps_with_without_dendro:
+    input:
+        "results/tmm_normalized_filtered_downweighted_read_counts/table.tmm_norm.sum_{sum_threshold}.min_reads_per_sample_{reads_in_sample_threshold}.min_samples_{sample_threshold}.txt"
+    output:
+        HEATMAP_DENDRO = "results/plots/heatmaps/heatmap.dendro.sum_{sum_threshold}.min_reads_per_sample_{reads_in_sample_threshold}.min_samples_{sample_threshold}.pdf",
+        HEATMAP_NO_DENDRO = "results/plots/heatmaps/heatmap.no_dendro.sum_{sum_threshold}.min_reads_per_sample_{reads_in_sample_threshold}.min_samples_{sample_threshold}.pdf"
+    shell:
+        """Rscript {script_dir}/heatmap_tmm_normalized_counts.R {input} {output.HEATMAP_DENDRO} {output.HEATMAP_NO_DENDRO} && echo {rule}.{wildcards} COMPLETED"""
+
+# Visualisation - PCA plots
+rule visualization_pca_plots:
+    input:
+        TMM_EXPR = "results/tmm_normalized_filtered_downweighted_read_counts/table.tmm_norm.sum_{sum_threshold}.min_reads_per_sample_{reads_in_sample_threshold}.min_samples_{sample_threshold}.txt",
+        BARCODE_SAMPLE_NAMES_FILE = expand("{barcode_sample_names}", barcode_sample_names=config["input_files"]["barcode_to_sample_file"])
+    output:
+        SAMPLE_DIST_HIST = "results/plots/PCA/sample_dist_hist.sum_{sum_threshold}.min_reads_per_sample_{reads_in_sample_threshold}.min_samples_{sample_threshold}.pdf",
+        PC1_PC2 = "results/plots/PCA/pca_plot_pc1_pc2.sum_{sum_threshold}.min_reads_per_sample_{reads_in_sample_threshold}.min_samples_{sample_threshold}.pdf",
+        PC1_PC3 = "results/plots/PCA/pca_plot_pc1_pc3.sum_{sum_threshold}.min_reads_per_sample_{reads_in_sample_threshold}.min_samples_{sample_threshold}.pdf",
+        PC2_PC3 = "results/plots/PCA/pca_plot_pc2_pc3.sum_{sum_threshold}.min_reads_per_sample_{reads_in_sample_threshold}.min_samples_{sample_threshold}.pdf",
+        PC_VAR_EXPLAINED = "results/plots/PCA/variance_explained_pc.sum_{sum_threshold}.min_reads_per_sample_{reads_in_sample_threshold}.min_samples_{sample_threshold}.pdf",
+        PC1_TRANS_CONTRIB = "results/plots/PCA/contributions_transcripts_pc1.sum_{sum_threshold}.min_reads_per_sample_{reads_in_sample_threshold}.min_samples_{sample_threshold}.pdf",
+        PC2_TRANS_CONTRIB = "results/plots/PCA/contributions_transcripts_pc2.sum_{sum_threshold}.min_reads_per_sample_{reads_in_sample_threshold}.min_samples_{sample_threshold}.pdf",
+        PC3_TRANS_CONTRIB = "results/plots/PCA/contributions_transcripts_pc3.sum_{sum_threshold}.min_reads_per_sample_{reads_in_sample_threshold}.min_samples_{sample_threshold}.pdf",
+        XY_CORR_PC1_READS_NUMS = "results/plots/PCA/corr_pc1_num_reads.sum_{sum_threshold}.min_reads_per_sample_{reads_in_sample_threshold}.min_samples_{sample_threshold}.pdf",
+        XY_CORR_PC2_READS_NUMS = "results/plots/PCA/corr_pc2_num_reads.sum_{sum_threshold}.min_reads_per_sample_{reads_in_sample_threshold}.min_samples_{sample_threshold}.pdf",
+        XY_CORR_PC3_READS_NUMS = "results/plots/PCA/corr_pc3_num_reads.sum_{sum_threshold}.min_reads_per_sample_{reads_in_sample_threshold}.min_samples_{sample_threshold}.pdf"
+    params:
+        SPLICING_PATTERN_DIR = "results/reads_splicing_patterns_removed_exons",
+        DISTINCTION_STRING = ".included"
+    shell:
+        """Rscript {script_dir}/pca_diagnostic_plots.R {input.TMM_EXPR} {params.SPLICING_PATTERN_DIR} {params.DISTINCTION_STRING} {input.BARCODE_SAMPLE_NAMES_FILE} {output.SAMPLE_DIST_HIST} {output.PC1_PC2} {output.PC1_PC3} {output.PC2_PC3} {output.PC_VAR_EXPLAINED} {output.PC1_TRANS_CONTRIB} {output.PC2_TRANS_CONTRIB} {output.PC3_TRANS_CONTRIB} {output.XY_CORR_PC1_READS_NUMS} {output.XY_CORR_PC2_READS_NUMS} {output.XY_CORR_PC3_READS_NUMS} && echo {rule}.{wildcards} COMPLETED"""
+
+# Creating a table with information about known transcript IDs and novel exons for each splicing pattern in downweighted read counts file before filtering
+rule annotation_table_splicing_patterns_all_downweighted_counts:
+    input:
+        MAPPINGS = "results/meta_gene_construction/meta_gene_genomic_exon_coordinates.txt",
+        SPLICE_PATTERNS = "results/downweighted_read_counts_after_removing_exons/table.downweighted_read_counts.all_isoforms_included_exons.txt"
+    output:
+        "results/all_isoforms_annotation_table_downweighted_reads/all_isoforms.downweighted_reads.annotation_table.txt"
+    shell:
+        """python3 -u {script_dir}/creating_isoform_info_table_existing_novel.py {input.MAPPINGS} {input.SPLICE_PATTERNS} {output} && echo {rule}.{wildcards} COMPLETED"""
+
+# Creating annotation table with coding status and length of coding transcripts, BED12 file and FASTA file with sequences of coding isoforms
+rule annotation_coding_status_length_bed12_fasta:
+    input:
+        MAPPINGS = "results/meta_gene_construction/meta_gene_genomic_exon_coordinates.txt",
+        GENOMIC_FASTA = expand("{genome_fasta}", genome_fasta=config["input_files"]["genome_fasta"]),
+        ANNOTATIONS_TABLE = "results/all_isoforms_annotation_table_downweighted_reads/all_isoforms.downweighted_reads.annotation_table.txt"
+    output:
+        ANNOTATION_CODING_LENGTH = "results/coding_length_extra_annotation/annotation_table.all_isoforms.coding_length.txt",
+        BED12_FILE = "results/coding_length_extra_annotation/bed12.all_isoforms.coding_length.bed12",
+        FASTA_CODING_SEQUENCE = "results/coding_length_extra_annotation/fasta_coding.all_isoforms.coding_length.fa"
+    params:
+        CHROMOSOME = expand("{chromosome}", chromosome=config["gene_info"]["chromosome_name"]),
+        STRAND = expand("{strand}", strand=config["gene_info"]["strand"])
+    shell:
+        """python3 -u {script_dir}/adding_coding_annotation_isoform_info_bed12_fasta.py {input.MAPPINGS} {input.GENOMIC_FASTA} {params.CHROMOSOME} {params.STRAND} {input.ANNOTATIONS_TABLE} {output.ANNOTATION_CODING_LENGTH} {output.BED12_FILE} {output.FASTA_CODING_SEQUENCE} && echo {rule}.{wildcards} COMPLETED"""
+
+# Creating annotation table with coding status and length of coding transcripts, BED12 file and FASTA file with sequences of coding isoforms for isoforms after thresholding
+rule annotation_coding_status_length_bed12_fasta_filtered_24_100:
+    input:
+        MAPPINGS = "results/meta_gene_construction/meta_gene_genomic_exon_coordinates.txt",
+        GENOMIC_FASTA = expand("{genome_fasta}", genome_fasta=config["input_files"]["genome_fasta"]),
+        ANNOTATIONS_TABLE = "results/annotation_table_filtered_downweighted_read_counts/annotation_table.sum_{sum_threshold}.min_reads_per_sample_{reads_in_sample_threshold}.min_samples_{sample_threshold}.txt"
+    output:
+        ANNOTATION_CODING_LENGTH = "results/coding_length_extra_annotation/annotation_table.sum_{sum_threshold}.min_reads_per_sample_{reads_in_sample_threshold}.min_samples_{sample_threshold}.coding_length.txt",
+        BED12_FILE = "results/coding_length_extra_annotation/bed12.sum_{sum_threshold}.min_reads_per_sample_{reads_in_sample_threshold}.min_samples_{sample_threshold}.coding_length.bed12",
+        FASTA_CODING_SEQUENCE = "results/coding_length_extra_annotation/fasta_coding.sum_{sum_threshold}.min_reads_per_sample_{reads_in_sample_threshold}.min_samples_{sample_threshold}.coding_length.fa"
+    params:
+        CHROMOSOME = expand("{chromosome}", chromosome=config["gene_info"]["chromosome_name"]),
+        STRAND = expand("{strand}", strand=config["gene_info"]["strand"])
+    shell:
+        """python3 -u {script_dir}/adding_coding_annotation_isoform_info_bed12_fasta.py {input.MAPPINGS} {input.GENOMIC_FASTA} {params.CHROMOSOME} {params.STRAND} {input.ANNOTATIONS_TABLE} {output.ANNOTATION_CODING_LENGTH} {output.BED12_FILE} {output.FASTA_CODING_SEQUENCE} && echo {rule}.{wildcards} COMPLETED"""
+
+# Creating a table with missing exons/novel exon-exon junctions in coding sequences
+rule missing_exons_novel_junctions_table:
+    input:
+        MAPPINGS = "results/meta_gene_construction/meta_gene_genomic_exon_coordinates.txt",
+        EXPRESSION_TMM = "results/tmm_normalized_filtered_downweighted_read_counts/table.tmm_norm.sum_{sum_threshold}.min_reads_per_sample_{reads_in_sample_threshold}.min_samples_{sample_threshold}.txt",
+        ANNOTATIONS_TABLE_CODING_STATUS = "results/coding_length_extra_annotation/annotation_table.sum_{sum_threshold}.min_reads_per_sample_{reads_in_sample_threshold}.min_samples_{sample_threshold}.coding_length.txt"
+    output:
+        "results/missing_exons_novel_junctions_expression/table.missing_exons_novel_junctions.sum_{sum_threshold}.min_reads_per_sample_{reads_in_sample_threshold}.min_samples_{sample_threshold}.txt"
+    shell:
+        """python3 -u {script_dir}/finding_exon_skipping_events_coding_transcripts_info_table.py {input.MAPPINGS} {input.EXPRESSION_TMM} {input.ANNOTATIONS_TABLE_CODING_STATUS} {output} && echo {rule}.{wildcards} COMPLETED"""
+
+# Creating FASTA file and info table for non-coding transcripts
+rule FASTA_info_table_transcripts_non_coding_transcripts:
+    input:
+        MAPPINGS = "results/meta_gene_construction/meta_gene_genomic_exon_coordinates.txt",
+        GENOMIC_FASTA = expand("{genome_fasta}", genome_fasta=config["input_files"]["genome_fasta"]),
+        EXPRESSION_TMM = "results/tmm_normalized_filtered_downweighted_read_counts/table.tmm_norm.sum_{sum_threshold}.min_reads_per_sample_{reads_in_sample_threshold}.min_samples_{sample_threshold}.txt",
+        ANNOTATIONS_TABLE_CODING_STATUS = "results/coding_length_extra_annotation/annotation_table.sum_{sum_threshold}.min_reads_per_sample_{reads_in_sample_threshold}.min_samples_{sample_threshold}.coding_length.txt"
+    output:
+        INFO_TABLE = "results/non_coding_novel_exons_transcript_fasta_info_table/info_table.sum_{sum_threshold}.min_reads_per_sample_{reads_in_sample_threshold}.min_samples_{sample_threshold}.txt",
+        FASTA_NOVEL_EXON = "results/non_coding_novel_exons_transcript_fasta_info_table/fasta_non_coding_transcripts.sum_{sum_threshold}.min_reads_per_sample_{reads_in_sample_threshold}.min_samples_{sample_threshold}.fa"
+    params:
+        CHROMOSOME = expand("{chromosome}", chromosome=config["gene_info"]["chromosome_name"]),
+        STRAND = expand("{strand}", strand=config["gene_info"]["strand"]),
+        CHAR_SEP_NOVEL_EXONS = '_'
+    shell:
+        """python3 -u {script_dir}/fasta_novel_noncoding_exons_info_table.py {input.MAPPINGS} {input.GENOMIC_FASTA} {params.CHROMOSOME} {params.STRAND} {input.EXPRESSION_TMM} {input.ANNOTATIONS_TABLE_CODING_STATUS} {params.CHAR_SEP_NOVEL_EXONS} {output.INFO_TABLE} {output.FASTA_NOVEL_EXON} && echo {rule}.{wildcards} COMPLETED"""

@@ -1,0 +1,49 @@
+{
+    "workdir" :
+    {
+        "workdir" : "workdir"
+    },
+    "samples" :
+    {
+        "fasta_file_dir" : "../examples/CACNA1C",
+        "downsampled_reads_num" : 2559
+    },
+    "input_files" :
+    {
+        "transcriptome_fasta" : "input/transcriptome.fa",
+        "last_transcriptome_index" : "LAST_index/transcriptome",
+        "last_transcriptome_index_dummy_file" : "LAST_index/transcriptomedummy.COMPLETED",
+        "genome_fasta" : "input/genome.fa",
+        "chrom_sizes" : "input/chrom_sizes.txt",
+        "last_genome_index" : "LAST_index/genome",
+        "last_genome_index_dummy_file" : "LAST_index/genomedummy.COMPLETED",
+        "gtf_file" : "input/annotation.gtf",
+        "all_exons_positions_ENSEMBL" : "input/mart_export.txt",
+        "barcode_to_sample_file" : "input/barcode_to_sample.txt",
+        "barcode_to_sample_file_downsampled" : "input/barcode_to_sample_downsampled.txt"
+    },
+    "gene_info" :
+    {
+        "gene_name" : "CACNA1C",
+        "chromosome_name" : "12",
+        "gene_start" : 2053297,
+        "gene_end" : 2697950,
+        "strand" : "+"
+    },
+    "parameters" :
+    {
+        "min_prop" : 0.5,
+        "min_prop_align" : 0.8,
+        "min_insert" : 9,
+        "min_exon_distance" : 6,
+        "distance_between_exons" : 200,
+        "exon_coverage_threshold" : 0.7,
+        "min_exon_length" : 6,
+        "min_reads_threshold" : 5,
+        "min_num_individuals_threshold" : 2,
+        "min_num_libraries_threshold" : 2,
+        "sum_threshold" : [24, 100],
+        "reads_in_sample_threshold" : 1,
+        "sample_threshold" : 2
+    }
+}
