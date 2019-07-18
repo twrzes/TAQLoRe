@@ -11,9 +11,9 @@ Installation
 - Source code: `GitHub <https://github.com/twrzes/TAQLoRe>`_
 - Issue tracker: `Issue tracker <https://github.com/twrzes/TAQLoRe/issues>`_
 
-*********
-Citations
-*********
+*************************
+Citations of dependencies
+*************************
 
 Our pipeline is based on following software:
 
@@ -23,6 +23,31 @@ Our pipeline is based on following software:
 - Bedtools: `Quinlan AR, Hall IM. BEDTools: a flexible suite of utilities for comparing genomic features. Bioinformatics. 2010 Mar 15;26(6):841-2. <https://academic.oup.com/bioinformatics/article/26/6/841/244688>`_
 - Pybedtools: `Dale RK, Pedersen BS, Quinlan AR. Pybedtools: a flexible Python library for manipulating genomic datasets and annotations. Bioinformatics. 2011 Dec 15;27(24):3423-4. <https://academic.oup.com/bioinformatics/article/27/24/3423/304825>`_
 
+*************************
+Papers using the pipeline
+*************************
+
+The following papers/pre-prints that use our pipeline has been published:
+
+- `Clark M, Wrzesinski T, Garcia-Bea A, Kleinman J, Hyde T, Weinberger D, Haerty W, Tunbridge E. bioRxiv 260562. <https://doi.org/10.1101/260562>`_
+
+*******
+Authors
+*******
+
+Developers:
+
+- Wilfried Haerty (Earlham Institute)
+- Tomasz Wrzesinski (Earlham Institute)
+
+Contributors:
+
+- Elizabeth Tunbridge (University of Oxford)
+- Michael Clark (University of Melbourne)
+- Nicola Hall (University of Oxford)
+- Syed Hussain (University of Oxford)
+- Hami Lee (University of Oxford)
+
 *************
 Things to add
 *************
@@ -31,7 +56,7 @@ Things to add
 - Usage of splice-site-based approach (part4 and part5).
 - Description of output files.
 - Description of scripts.
-- Description of example datasat.
+- Description of example dataset.
 
 .. toctree::
    :maxdepth: 2
