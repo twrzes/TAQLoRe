@@ -70,9 +70,9 @@ sub FLATTEN_GTF{
 		if($_=~/\texon\t/){
 			chomp;
 			my $line=$_;
-			$line=~/gene_id \"([0-9a-zA-Z_]+)\";/;
+			$line=~/gene_id \"([0-9a-zA-Z_.]+)\";/;
 			my $geneid=$1;
-			$line=~/transcript_id \"([0-9a-zA-Z_]+)\";/;
+			$line=~/transcript_id \"([0-9a-zA-Z_.]+)\";/;
 			my $transid=$1;
 			$_=~s/\"//g;
 			$_=~s/;//g;
