@@ -105,7 +105,7 @@ dependencies:
   - libsodium=1.0.16=h14c3975_1001
   - libssh2=1.8.2=h22169c7_2
   - libstdcxx-ng=8.2.0=hdf63c60_1
-  - libtiff=4.0.10=h648cc4a_1001
+  - libtiff
   - libtool=2.4.6=h14c3975_1002
   - libuuid=2.32.1=h14c3975_1000
   - libxcb=1.13=h14c3975_1002
@@ -274,7 +274,7 @@ dependencies:
   - r-openxlsx=4.1.0=r351h29659fb_1000
   - r-pbdzmq=0.3_3=r351h47a35c4_1001
   - r-pbkrtest=0.4_7=r351h6115d3f_1001
-  - r-pillar=1.4.0=h6115d3f_0
+  - r-pillar
   - r-pkgconfig=2.0.2=r351h6115d3f_1001
   - r-plogr=0.2.0=r351h6115d3f_1001
   - r-plyr=1.8.4=r351h29659fb_1002
